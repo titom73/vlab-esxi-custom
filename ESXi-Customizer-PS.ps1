@@ -2,11 +2,11 @@
 #
 # ESXi-Customizer-PS.ps1 - a script to build a customized ESXi installation ISO using ImageBuilder
 #
-# Version:       2.8.0
+# Version:       2.8.1
 # Author:        Andreas Peetz (ESXi-Customizer-PS@v-front.de)
 # Info/Tutorial: https://esxi-customizer-ps.v-front.de/
 #
-# Contributors:  Alex Lopez, Andre Pett
+# Contributors:  Alex Lopez, Andre Pett, Vladislav Grishenko
 #
 # License:
 #
@@ -22,7 +22,7 @@
 
 param(
     [string]$iZip = "",
-    [string]$pkgDir = "",
+    [string[]]$pkgDir = @(),
     [string]$outDir = $(Split-Path $MyInvocation.MyCommand.Path),
     [string]$ipname = "",
     [string]$ipvendor = "",
@@ -50,7 +50,7 @@ param(
 
 # Constants
 $ScriptName = "ESXi-Customizer-PS"
-$ScriptVersion = "2.8.0"
+$ScriptVersion = "2.8.1"
 $ScriptURL = "https://ESXi-Customizer-PS.v-front.de"
 
 $AccLevel = @{"VMwareCertified" = 1; "VMwareAccepted" = 2; "PartnerSupported" = 3; "CommunitySupported" = 4}
@@ -63,7 +63,7 @@ $vftdepotURL = "https://vibsdepot.v-front.de/"
 function AddVIB2Profile($vib) {
     $AddVersion = $vib.Version
     $ExVersion = ($MyProfile.VibList | where { $_.Name -eq $vib.Name }).Version
-    
+
     # Check for vib replacements
     $ExName = ""
     if ($ExVersion -eq $null) {
@@ -76,7 +76,7 @@ function AddVIB2Profile($vib) {
             }
         }
     }
-    
+
     if ($AccLevel[$vib.AcceptanceLevel.ToString()] -gt $AccLevel[$MyProfile.AcceptanceLevel.ToString()]) {
         write-host -F Yellow -nonewline (" [New AcceptanceLevel: " + $vib.AcceptanceLevel + "]")
         $MyProfile.AcceptanceLevel = $vib.AcceptanceLevel
@@ -115,7 +115,7 @@ write-host ("`nThis is " + $ScriptName + " Version " + $ScriptVersion + " (visit
 if ($help) {
     write-host "`nUsage:"
     write-host "  ESXi-Customizer-PS [-help] |  [-izip <bundle> [-update]] [-sip] [-v70|-v67|-v65|-v60|-v55|-v51|-v50]"
-    write-host "                                [-ozip] [-pkgDir <dir>] [-outDir <dir>] [-vft] [-dpt depot1[,...]]"
+    write-host "                                [-ozip] [-pkgDir <dir>[,...]] [-outDir <dir>] [-vft] [-dpt depot1[,...]]"
     write-host "                                [-load vib1[,...]] [-remove vib1[,...]] [-log <file>] [-ipname <name>]"
     write-host "                                [-ipdesc <desc>] [-ipvendor <vendor>] [-nsc] [-test]"
     write-host "`nOptional parameters:"
@@ -124,7 +124,7 @@ if ($help) {
     write-host "   -update            : only with -izip, updates a local bundle with an ESXi patch from the VMware Online depot,"
     write-host "                        combine this with the matching ESXi version selection switch"
     write-host "   -pzip              : use an Offline patch bundle instead of the Online depot with -update."
-    write-host "   -pkgDir <dir>      : local directory of Offline bundles and/or VIB files to add (if any, no default)"
+    write-host "   -pkgDir <dir>[,...]: local directories of Offline bundles and/or VIB files to add (if any, no default)"
     write-host "   -ozip              : output an Offline bundle instead of an installation ISO"
     write-host "   -outDir <dir>      : directory to store the customized ISO or Offline bundle (the default is the"
     write-host "                        script directory. If specified the log file will also be moved here.)"
@@ -380,7 +380,7 @@ write-host ("(Dated " + $CloneIP.CreationTime + ", AcceptanceLevel: " + $CloneIP
 write-host ($CloneIP.Description + ")")
 
 # If customization is required ...
-if ( ($pkgDir -ne "") -or $update -or ($load -ne @()) -or ($remove -ne @()) ) {
+if ( ($pkgDir -ne @()) -or $update -or ($load -ne @()) -or ($remove -ne @()) ) {
 
     # Create your own Imageprofile
     if ($ipname -eq "") { $ipname = $CloneIP.Name + "-customized" }
@@ -403,29 +403,31 @@ if ( ($pkgDir -ne "") -or $update -or ($load -ne @()) -or ($remove -ne @()) ) {
     }
 
     # Loop over Offline bundles and VIB files
-    if ($pkgDir -ne "") {
+    if ($pkgDir -ne @()) {
         write-host "`nLoading Offline bundles and VIB files from" $pkgDir ...
-        foreach ($obundle in Get-Item $pkgDir\*.zip) {
-            write-host -nonewline "   Loading" $obundle ...
-            if ($ob = Add-EsxSoftwaredepot $obundle -ErrorAction SilentlyContinue) {
-                write-host -F Green " [OK]"
-                $ob | Get-EsxSoftwarePackage | foreach {
-                    write-host -nonewline "      Add VIB" $_.Name $_.Version
-                    AddVIB2Profile $_
+        foreach ($dir in $pkgDir) {
+            foreach ($obundle in Get-Item $dir\*.zip) {
+                write-host -nonewline "   Loading" $obundle ...
+                if ($ob = Add-EsxSoftwaredepot $obundle -ErrorAction SilentlyContinue) {
+                    write-host -F Green " [OK]"
+                    $ob | Get-EsxSoftwarePackage | foreach {
+                        write-host -nonewline "      Add VIB" $_.Name $_.Version
+                        AddVIB2Profile $_
+                    }
+                } else {
+                    write-host -F Red " [FAILED]`n      Probably not a valid Offline bundle, ignoring."
                 }
-            } else {
-                write-host -F Red " [FAILED]`n      Probably not a valid Offline bundle, ignoring."
             }
-        }
-        foreach ($vibFile in Get-Item $pkgDir\*.vib) {
-            write-host -nonewline "   Loading" $vibFile ...
-            try {
-                $vib1 = Get-EsxSoftwarePackage -PackageUrl $vibFile -ErrorAction SilentlyContinue
-                write-host -F Green " [OK]"
-                write-host -nonewline "      Add VIB" $vib1.Name $vib1.Version
-                AddVIB2Profile $vib1
-            } catch {
-                write-host -F Red " [FAILED]`n      Probably not a valid VIB file, ignoring."
+            foreach ($vibFile in Get-Item $dir\*.vib) {
+                write-host -nonewline "   Loading" $vibFile ...
+                try {
+                    $vib1 = Get-EsxSoftwarePackage -PackageUrl $vibFile -ErrorAction SilentlyContinue
+                    write-host -F Green " [OK]"
+                    write-host -nonewline "      Add VIB" $vib1.Name $vib1.Version
+                    AddVIB2Profile $vib1
+                } catch {
+                    write-host -F Red " [FAILED]`n      Probably not a valid VIB file, ignoring."
+                }
             }
         }
     }
